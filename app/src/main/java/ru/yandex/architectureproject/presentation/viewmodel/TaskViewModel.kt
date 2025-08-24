@@ -3,8 +3,12 @@ package ru.yandex.architectureproject.presentation.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -18,6 +22,8 @@ import ru.yandex.architectureproject.domain.GetAllTasksUseCase
 import ru.yandex.architectureproject.domain.IncompleteTaskUseCase
 import ru.yandex.architectureproject.presentation.state.TaskAction
 import ru.yandex.architectureproject.presentation.state.TaskState
+import ru.yandex.architectureproject.presentation.state.TaskUiEffect
+import java.util.concurrent.ConcurrentHashMap
 
 class TaskViewModel(
     private val addTaskUseCase: AddTaskUseCase,
@@ -30,12 +36,52 @@ class TaskViewModel(
     private val _state = MutableStateFlow<TaskState>(TaskState.Loading)
     val state: StateFlow<TaskState> = _state.asStateFlow()
 
+    private val _uiEffect = MutableSharedFlow<TaskUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private val taskJobs = ConcurrentHashMap<String, Job>()
+
     init {
         reduce(TaskAction.LoadTasks)
     }
 
     fun reduce(action: TaskAction) {
-        // TODO: Здесь должна быть обработка действий
+        viewModelScope.launch {
+            when (action) {
+                is TaskAction.LoadTasks -> loadTasks()
+                is TaskAction.AddTask -> addTaskUseCase(action.task)
+                is TaskAction.UpdateTaskStatus -> if (action.isDone) {
+                    markTaskAsComplete(action)
+                } else {
+                    markTaskAsIncomplete(action)
+                }
+
+                is TaskAction.DeleteTask -> deleteTaskUseCase(action.taskId)
+            }
+
+            if (action.shouldUpdateTaskListImmediately()) {
+                reduce(TaskAction.LoadTasks)
+            }
+        }
+    }
+
+    private fun markTaskAsComplete(action: TaskAction.UpdateTaskStatus) {
+        taskJobs[action.taskId.toString()] = viewModelScope.launch(Dispatchers.IO) {
+            _uiEffect.emit(TaskUiEffect.ShowUndoDeleteTaskSnackbar(action.taskId))
+            completeTaskUseCase(action.taskId)
+            taskJobs.remove(action.taskId.toString())
+            withContext(viewModelScope.coroutineContext) {
+                reduce(TaskAction.LoadTasks)
+            }
+        }
+    }
+
+    private suspend fun markTaskAsIncomplete(action: TaskAction.UpdateTaskStatus) {
+        _uiEffect.emit(TaskUiEffect.HideUndoDeleteTaskSnackbar)
+        incompleteTaskUseCase(action.taskId)
+        taskJobs[action.taskId.toString()]?.cancel()
+        taskJobs.remove(action.taskId.toString())
+        reduce(TaskAction.LoadTasks)
     }
 
     private suspend fun loadTasks() {
@@ -46,5 +92,15 @@ class TaskViewModel(
                 .catch { e -> _state.value = TaskState.Error(e.message ?: "Ошибка загрузки") }
                 .collect { tasks -> _state.value = TaskState.Loaded(tasks) }
         }
+    }
+
+    companion object {
+        fun TaskAction.shouldUpdateTaskListImmediately() =
+            when (this) {
+                is TaskAction.AddTask,
+                is TaskAction.DeleteTask -> true
+
+                else -> false
+            }
     }
 }
