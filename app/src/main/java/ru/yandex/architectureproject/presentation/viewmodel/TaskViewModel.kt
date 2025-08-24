@@ -23,6 +23,7 @@ import ru.yandex.architectureproject.domain.IncompleteTaskUseCase
 import ru.yandex.architectureproject.presentation.state.TaskAction
 import ru.yandex.architectureproject.presentation.state.TaskState
 import ru.yandex.architectureproject.presentation.state.TaskUiEffect
+import java.util.concurrent.ConcurrentHashMap
 
 class TaskViewModel(
     private val addTaskUseCase: AddTaskUseCase,
@@ -38,7 +39,7 @@ class TaskViewModel(
     private val _uiEffect = MutableSharedFlow<TaskUiEffect>()
     val uiEffect = _uiEffect.asSharedFlow()
 
-    private val taskJobs = mutableMapOf<String, Job>()
+    private val taskJobs = ConcurrentHashMap<String, Job>()
 
     init {
         reduce(TaskAction.LoadTasks)
